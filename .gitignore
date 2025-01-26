@@ -1,0 +1,4 @@
+*.o
+mcu_native.so
+*.py[co]
+__pycache__/*
