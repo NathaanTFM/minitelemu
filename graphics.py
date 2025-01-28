@@ -475,7 +475,7 @@ class Graphics:
             color_to_rgb = lambda color: (((color >> 0) & 1) * 255, ((color >> 1) & 1) * 255, ((color >> 2) & 1) * 255)
             bg_rgb = color_to_rgb(fg_color if negative else bg_color)
             fg_rgb = color_to_rgb(bg_color if negative else fg_color)
-            if flash and self.__flashval & 2:
+            if flash and bool(self.__flashval & 2) ^ bool(negative):
                 fg_rgb = bg_rgb
 
             is_cursor = self.__mat & (1<<6) and x == cursor[2] and y == cursor[3] and (not (self.__mat & (1<<5)) or (self.__flashval & 1))
