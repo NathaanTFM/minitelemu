@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <SDL2/SDL.h>
 
@@ -58,8 +59,49 @@ static mcu_8051_config_t config = {
     .set_port_cb = set_port,
 };
 
+static void render_screen() {
+    for (int i = 0; i < 25; i++) {
+        static uint8_t line[10][40*8/2];
+        static uint8_t linergb[10][40*8*2];
+        int y = ef9345_render(gfx, line);
+
+        for (int dy = 0; dy < 10; dy++) {
+            for (int x = 0; x < 40 * 8; x += 2) {
+                uint8_t color = line[dy][x/2];
+
+                for (int j = 0; j < 2; j++) {
+                    // GB,AR
+                    linergb[dy][(x+j) * 2 + 0] = (((color >> 1) & 1) * 0xF0) | (((color >> 2) & 1) * 0xF);
+                    linergb[dy][(x+j) * 2 + 1] =  0xF0 | (((color >> 0) & 1) * 0xF);
+                    color >>= 4;
+                }
+                
+            }
+        }
+
+        SDL_Rect rect;
+        rect.x = 0;
+        rect.y = y * 10;
+        rect.w = 40*8;
+        rect.h = 10;
+        int ret = SDL_UpdateTexture(texture, &rect, linergb, sizeof(*linergb));
+        if (ret != 0) {
+            puts(SDL_GetError());
+        }
+    }
+
+    SDL_Rect rect;
+    rect.x = 0;
+    rect.y = 0;
+    rect.w = 40*8;
+    rect.h = 25*10;
+    SDL_RenderClear(render);
+    SDL_RenderCopy(render, texture, NULL, &rect);
+    SDL_RenderPresent(render);
+}
+
 static double diff_timespec(const struct timespec *time1, const struct timespec *time0) {
-    return (time1->tv_sec - time0->tv_sec) + (time1->tv_nsec - time0->tv_nsec) / 1000000000.0;
+    return (time1->tv_sec - time0->tv_sec) * 1000000.0 + (time1->tv_nsec - time0->tv_nsec) / 1000.0;
 }
 
 int main(void) {
@@ -103,31 +145,12 @@ int main(void) {
     mcu = mcu_8051_init(&config);
     gfx = ef9345_init(vram, 0x1FFF, charset);
 
-    struct timespec t1, t2;
-
-    double freq_avg = 0;
-
     #define DIVIDER (60)
 
-    for (int gi = 0; gi < 2000; gi++) {
+    struct timespec t1, t2, t3;
+
+    for (;;) {
         clock_gettime(CLOCK_MONOTONIC, &t1);
-
-        uint32_t cycles = 0;
-        while (cycles < (11059200 / 12 / DIVIDER)) {
-            uint32_t instr_cycles = mcu_8051_run_instr(mcu);
-            cycles += instr_cycles;
-
-            ef9345_update(gfx, instr_cycles * 12);
-            modem_update(mcu, instr_cycles * 12);
-        }
-
-        //SDL_Delay(1000/DIVIDER);
-        clock_gettime(CLOCK_MONOTONIC, &t2);
-
-        double freq_mhz = (11.059200 * (1./DIVIDER)) / diff_timespec(&t2, &t1);
-        freq_avg += freq_mhz;
-        //printf("Freq: %.3f MHz   ", freq_mhz);
-        //printf("Factor: %.1f%%\n", (100 * freq_mhz) / 11.059200);
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -136,50 +159,35 @@ int main(void) {
             }
         }
 
-        for (int i = 0; i < 25*10; i++) {
-            static uint8_t line[10][40*8/2];
-            static uint8_t linergb[10][40*8*2];
-            int y = ef9345_render(gfx, line);
 
-            for (int dy = 0; dy < 10; dy++) {
-                for (int x = 0; x < 40 * 8; x += 2) {
-                    uint8_t color = line[dy][x/2];
+        uint32_t cycles = 0;
+        
+        while (cycles < (11059200 / 12 / DIVIDER)) {
+            uint32_t instr_cycles = mcu_8051_run_instr(mcu);
+            cycles += instr_cycles;
 
-                    for (int j = 0; j < 2; j++) {
-                        // GB,AR
-                        linergb[dy][(x+j) * 2 + 0] = (((color >> 1) & 1) * 0xF0) | (((color >> 2) & 1) * 0xF);
-                        linergb[dy][(x+j) * 2 + 1] =  0xF0 | (((color >> 0) & 1) * 0xF);
-                        color >>= 4;
-                    }
-                    
-                }
-            }
-
-            SDL_Rect rect;
-            rect.x = 0;
-            rect.y = y * 10;
-            rect.w = 40*8;
-            rect.h = 10;
-            int ret = SDL_UpdateTexture(texture, &rect, linergb, sizeof(*linergb));
-            if (ret != 0) {
-                puts(SDL_GetError());
-            }
+            ef9345_update(gfx, instr_cycles * 12);
+            modem_update(mcu, instr_cycles * 12);
         }
 
-        SDL_Rect rect;
-        rect.x = 0;
-        rect.y = 0;
-        rect.w = 40*8;
-        rect.h = 25*10;
-        SDL_RenderClear(render);
-        SDL_RenderCopy(render, texture, NULL, &rect);
-        SDL_RenderPresent(render);
+        render_screen();
 
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+
+        uint64_t delay = ((double)cycles / (11.059200 / 12));
+        double diff = diff_timespec(&t2, &t1);
+
+        if (delay >= diff) {
+            usleep(delay - diff);
+        }
+
+        clock_gettime(CLOCK_MONOTONIC, &t3);
+        double diff2 = diff_timespec(&t3, &t1);
+        
+        double freq1_mhz = (cycles * 12) / diff;
+        double freq2_mhz = (cycles * 12) / diff2;
+        printf("Freq: %.3f MHz   ", freq1_mhz);
+        printf("Factor: %.1f%%   ", (100 * freq1_mhz) / (cycles * 12./1000000.));
+        printf("Capped: %.3f MHz\n", freq2_mhz);
     }
-
-    f = fopen("vram_dump.bin", "wb");
-    fwrite(vram, 1, sizeof(vram), f);
-    fclose(f);
-
-    printf("Freq avg: %.3f MHz\n", freq_avg / 2000.0);
 }
