@@ -28,6 +28,7 @@ typedef struct mcu_8051_t mcu_8051_t;
 
 mcu_8051_t *mcu_8051_init(const mcu_8051_config_t *config);
 int mcu_8051_run_instr(mcu_8051_t *mcu);
+uint8_t mcu_8051_get_port(mcu_8051_t *mcu, uint8_t port);
 void mcu_8051_set_port(mcu_8051_t *mcu, uint8_t port, uint8_t value);
 char *mcu_8051_dump_state(mcu_8051_t *mcu);
 

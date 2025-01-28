@@ -378,22 +378,26 @@ static void store_fsr(mcu_8051_t *mcu, uint8_t addr, uint8_t value) {
 
     case 0x80: // P0
         mcu->p0 = value;
-        mcu->set_port_cb(mcu->cb_arg, 0, mcu->p0);
+        if (mcu->set_port_cb)
+            mcu->set_port_cb(mcu->cb_arg, 0, mcu->p0);
         break;
 
     case 0x90: // P1
         mcu->p1 = value;
-        mcu->set_port_cb(mcu->cb_arg, 1, mcu->p1);
+        if (mcu->set_port_cb)
+            mcu->set_port_cb(mcu->cb_arg, 1, mcu->p1);
         break;
 
     case 0xA0: // P2
         mcu->p2 = value;
-        mcu->set_port_cb(mcu->cb_arg, 2, mcu->p2);
+        if (mcu->set_port_cb)
+            mcu->set_port_cb(mcu->cb_arg, 2, mcu->p2);
         break;
 
     case 0xB0: // P3
         mcu->p3 = value;
-        mcu->set_port_cb(mcu->cb_arg, 3, mcu->p3);
+        if (mcu->set_port_cb)
+            mcu->set_port_cb(mcu->cb_arg, 3, mcu->p3);
         break;
 
     case 0x8A: // TL0
@@ -1571,8 +1575,20 @@ void mcu_8051_set_port(mcu_8051_t *mcu, uint8_t port, uint8_t value) {
     }
 }
 
+uint8_t mcu_8051_get_port(mcu_8051_t *mcu, uint8_t port) {
+    switch (port) {
+    case 0: return mcu->p0;
+    case 1: return mcu->p1;
+    case 2: return mcu->p2;
+    case 3: return mcu->p3;
+    default:
+        fprintf(stderr, "Invalid port %d\n", port);
+        abort();
+    }
+}
+
 mcu_8051_t *mcu_8051_init(const mcu_8051_config_t *config) {
-    mcu_8051_t *mcu = calloc(1, sizeof(mcu_8051_t));
+    mcu_8051_t *mcu = (mcu_8051_t *)calloc(1, sizeof(mcu_8051_t));
     if (!mcu)
         return NULL;
 
