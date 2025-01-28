@@ -1,8 +1,9 @@
-#include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+
+#include "mcu.h"
 
 #if INT_MAX != 0x7FFFFFFF
 #error INT_MAX not 32
@@ -15,33 +16,12 @@
 #define IRQ_SERIAL 4
 #define IRQ_TIMER_2 5
 
-typedef uint8_t (*get_port_cb_t)(void *arg, uint8_t port);
-typedef void (*set_port_cb_t)(void *arg, uint8_t port, uint8_t val);
-typedef uint8_t (*load_xram8_cb_t)(void *arg, uint8_t addr);
-typedef uint16_t (*load_xram16_cb_t)(void *arg, uint16_t addr);
-typedef void (*store_xram8_cb_t)(void *arg, uint8_t addr, uint8_t val);
-typedef void (*store_xram16_cb_t)(void *arg, uint16_t addr, uint8_t val);
-
 typedef struct bit_addr_t {
     uint8_t addr;
     uint8_t bit;
 } bit_addr_t;
 
-typedef struct mcu_8051_config_t {
-    const uint8_t *rom;
-    uint16_t rom_mask;
-
-    void *cb_arg;
-    get_port_cb_t get_port_cb;
-    set_port_cb_t set_port_cb;
-    load_xram8_cb_t load_xram8_cb;
-    load_xram16_cb_t load_xram16_cb;
-    store_xram8_cb_t store_xram8_cb;
-    store_xram16_cb_t store_xram16_cb;
-
-} mcu_8051_config_t;
-
-typedef struct mcu_8051_t {
+struct mcu_8051_t {
     // Registers and SFRs
     uint8_t a, b;
     uint8_t psw;
@@ -89,8 +69,7 @@ typedef struct mcu_8051_t {
     load_xram16_cb_t load_xram16_cb;
     store_xram8_cb_t store_xram8_cb;
     store_xram16_cb_t store_xram16_cb;
-
-} mcu_8051_t;
+};
 
 static uint8_t calc_parity(uint8_t byte) {
     byte ^= (byte >> 4);
