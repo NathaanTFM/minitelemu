@@ -41,7 +41,7 @@ else:
 
     McuNativeRunInstr = MCU_SO.mcu_8051_run_instr
     McuNativeRunInstr.argtypes = (ctypes.c_void_p,)
-    McuNativeRunInstr.restype = ctypes.c_int
+    McuNativeRunInstr.restype = ctypes.c_uint32
 
     McuNativeDumpState = MCU_SO.mcu_8051_dump_state
     McuNativeDumpState.argtypes = (ctypes.c_void_p,)
