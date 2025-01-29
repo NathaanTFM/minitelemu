@@ -210,13 +210,14 @@ static uint8_t load_fsr(mcu_8051_t *mcu, uint8_t addr, bool to_write) {
     case 0x81: // SP
         return mcu->sp;
     
-    case 0xD0: // PSW
+    case 0xD0: { // PSW
         uint8_t value = mcu->psw & 0x38; // keep f0, rs1, rs0
         value |= mcu->flags.c << 7;
         value |= mcu->flags.ac << 6;
         value |= mcu->flags.ov << 2;
         value |= calc_parity(mcu->a);
         return value;
+    }
     
     case 0x82: // DPL
         return mcu->dptr & 0xFF;
@@ -1453,6 +1454,10 @@ static void update_timer01(mcu_8051_t *mcu, int timer, int cycles) {
 
 static void update_timer2(mcu_8051_t *mcu, int cycles) {
     int down_counter = mcu->t2mod & 1; // ???
+    if (down_counter) {
+        fprintf(stderr, "down_counter timer2 is not implemented\n");
+        abort();
+    }
     // # output_enable is not relevant yet TODO what is this
 
     if (mcu->t2con & 4) {
