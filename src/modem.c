@@ -1,4 +1,5 @@
 #include "modem.h"
+#include <stdio.h>
 
 static const uint8_t *modem_page;
 static size_t modem_pagesize;
@@ -8,6 +9,7 @@ static int modem_p17, modem_dp, modem_p33; // output
 static int modem_p14, modem_dpe, modem_ed, modem_p34, modem_p35; // input
 static uint16_t modem_rxcur, modem_txcur;
 static int modem_txdelay;
+static int modem_prev_con = 1;
 
 static int calc_parity(uint8_t v) {
     v ^= v >> 4;
@@ -30,22 +32,78 @@ static int modem_txbit() {
     return ret;
 }
 
+static uint8_t modem_rxbit(int bit) {
+    modem_rxcur = (modem_rxcur >> 1) | (bit << 9);
+
+    if ((modem_rxcur & 0x201) == 0x200) {
+        uint8_t byte = (modem_rxcur >> 1) & 0x7F;
+        if (((modem_rxcur >> 8) & 1) ^ calc_parity(byte)) {
+            byte = 0x7F; // Parity error
+        }
+
+        modem_rxcur = 0x3FF;
+        return byte;
+
+    } else {
+        return 0xFF; // No byte
+    }
+
+}
+
 static void modem_tick_75() {
+    if (!modem_p14) {
+        if (modem_p35) {
+            modem_p33 = modem_txbit();
+
+        } else {
+            modem_rxbit(modem_ed);
+        }
+    }
 }
 
 static void modem_tick_1200() {
-    modem_p17 = 0;
-    modem_dp = 0;
-    modem_p33 = modem_txbit();
+    if (modem_prev_con != modem_p14) {
+        printf("changed state!\n");
+        modem_txdelay = 4800;
+        modem_txcur = 0x3FF;
+        modem_rxcur = 0x3FF;
 
-    if (modem_pagesize != 0) {
-        if (modem_txdelay <= 0) {
-            uint8_t byte = modem_page[0];
-            modem_page++; modem_pagesize--;
+        modem_prev_con = modem_p14;
+    }
+    
+    if (modem_p14) {
+        // Pas connexion
+        modem_p17 = 0;
+        modem_dp = 0;
+
+        uint8_t byte = modem_rxbit(modem_ed);
+        if (byte != 0xFF) {
             modem_txcur = 0x200 | (byte << 1) | (calc_parity(byte) << 8);
-            modem_txdelay = 9;
+        }
+
+        modem_p33 = modem_txbit();
+
+    } else {
+        // Connexion
+        modem_p17 = 1;
+        modem_dp = 0;
+
+        if (modem_p35) {
+            // Inversé
+
         } else {
-            modem_txdelay--;
+            modem_p33 = modem_txbit();
+
+            if (modem_pagesize != 0) {
+                if (modem_txdelay <= 0) {
+                    uint8_t byte = modem_page[0];
+                    modem_page++; modem_pagesize--;
+                    modem_txcur = 0x200 | (byte << 1) | (calc_parity(byte) << 8);
+                    modem_txdelay = 9;
+                } else {
+                    modem_txdelay--;
+                }
+            }
         }
     }
 }

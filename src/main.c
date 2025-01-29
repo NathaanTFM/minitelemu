@@ -10,10 +10,68 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #include <SDL2/SDL.h>
 
 #define DIVIDER (60)
+
+static const uint8_t KB_MAP_1[] = {4, 2, 3, 1, 14, 12, 13, 11};
+static const uint8_t KB_MAP_2[] = {15, 10, 9, 8, 7, 6, 5, 0};
+
+static uint8_t get_code_from_key(SDL_Keycode sym) {
+    switch (sym) {
+    case SDLK_a: return 0x39;
+    case SDLK_z: return 0x29;
+    case SDLK_e: return 0x25;
+    case SDLK_r: return 0x35;
+    case SDLK_t: return 0x15;
+    case SDLK_y: return 0x45;
+    case SDLK_u: return 0xB9;
+    case SDLK_i: return 0xC9;
+    case SDLK_o: return 0xD9;
+    case SDLK_p: return 0xE9;
+    case SDLK_q: return 0x3A;
+    case SDLK_s: return 0x2A;
+    case SDLK_d: return 0x26;
+    case SDLK_f: return 0x36;
+    case SDLK_g: return 0x16;
+    case SDLK_h: return 0x46;
+    case SDLK_j: return 0xBA;
+    case SDLK_k: return 0xCA;
+    case SDLK_l: return 0xDA;
+    case SDLK_m: return 0xEA;
+    case SDLK_w: return 0x3F;
+    case SDLK_x: return 0x2F;
+    case SDLK_c: return 0x28;
+    case SDLK_v: return 0x38;
+    case SDLK_b: return 0x18;
+    case SDLK_n: return 0x48;
+    case SDLK_SPACE: return 0x4F;
+    case SDLK_TAB: return 0x1A;
+    case SDLK_RALT: return 0x1F;
+    case SDLK_LCTRL: return 0x4A;
+    case SDLK_LSHIFT: return 0xB0;
+    case SDLK_RSHIFT: return 0xB0;
+    case SDLK_ESCAPE: return 0x27;
+
+    case SDLK_0: return 0xB8;
+    case SDLK_1: return 0xE6;
+    case SDLK_2: return 0xE8;
+    case SDLK_3: return 0xEF;
+    case SDLK_4: return 0xD6;
+    case SDLK_5: return 0xD8;
+    case SDLK_6: return 0xDF;
+    case SDLK_7: return 0xC6;
+    case SDLK_8: return 0xC8;
+    case SDLK_9: return 0xCF;
+    default: return 0;
+    }
+}
+
+static bool keydown[16][16];
+
+#define NELEMS(tab) ((sizeof(*tab) / sizeof(tab)))
 
 static SDL_Window *window;
 static SDL_Texture *texture;
@@ -49,8 +107,21 @@ static void store_xram16(void *arg, uint16_t addr, uint8_t value) {
 
 static void set_port(void *arg, uint8_t port, uint8_t value) {
     (void)arg;
-    (void)port;
-    (void)value;
+
+    if (port == 1) {
+        int left = KB_MAP_1[value & 7];
+        uint8_t mask = 0;
+
+        for (int i = 0; i < 8; i++) {
+            int right = KB_MAP_2[i];
+
+            if (keydown[left][right]) {
+                mask |= (1 << i);
+            }
+        }
+
+        mcu_8051_set_port(mcu, 2, 0xFF & ~mask);
+    }
 }
 
 static mcu_8051_config_t config = {
@@ -142,6 +213,13 @@ static uint32_t loop_func() {
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
             exit(0);
+        } else if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) && !event.key.repeat) {
+            SDL_Keycode sym = event.key.keysym.sym;
+            uint8_t code = get_code_from_key(sym);
+
+            if (code != 0) {
+                keydown[((code >> 4) & 0xF)][(code & 0xF)] = (event.type == SDL_KEYDOWN);
+            }
         }
     }
 
@@ -195,6 +273,7 @@ int main(void) {
     modem_init();
 
     SDL_Init(SDL_INIT_VIDEO);
+    SDL_StopTextInput();
 
     window = SDL_CreateWindow("EF9345", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 8 * 40 * 3, 10 * 25 * 3, SDL_WINDOW_RESIZABLE);
     render = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -215,9 +294,11 @@ int main(void) {
 #else
     struct timespec t1, t2, t3;
 
-    double freq_avg = 0;
-    int i;
-    for (;; i++) {
+    double freq1_avg = 0, freq2_avg = 0;
+    int iterations = 0;
+
+    for (;;) {
+        t3 = t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double cycles = loop_func();
         clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -233,15 +314,27 @@ int main(void) {
         double diff2 = diff_timespec(&t3, &t1);
         
         double freq1_mhz = (cycles * 12) / diff;
-        double freq2_mhz = (cycles * 12) / diff2;
+
+        if (iterations != 0) {
+            double freq2_mhz = (cycles * 12) / diff2;
+            freq2_avg += freq2_mhz;
+        }
+
+        freq1_avg += freq1_mhz;
+        iterations++;
+
+        if ((iterations & 63) == 0) {
+            printf("Freq avg: %.3f MHz (capped: %.3f MHz)\n", freq1_avg / iterations, freq2_avg / iterations);
+        }
+
+        /*
         printf("Freq: %.3f MHz   ", freq1_mhz);
         printf("Factor: %.1f%%   ", (100 * freq1_mhz) / 11.059200);
         printf("Capped: %.3f MHz\n", freq2_mhz);
-
-        freq_avg += freq1_mhz;
+        */
     }
 
-    printf("Freq avg: %.3f MHz\n", freq_avg / i);
+    printf("Freq avg: %.3f MHz\n", freq1_avg / iterations);
 
 #endif
 }
