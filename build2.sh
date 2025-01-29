@@ -1,6 +1,6 @@
 #!/bin/bash
-mkdir temp
-mkdir web
+mkdir temp -p
+mkdir web -p
 
 BIN2C="import sys
 data = open(sys.argv[1], 'rb').read()
@@ -12,6 +12,8 @@ python3 -c "$BIN2C" data/charset.bin temp/charset_bin.h temp/charset_bin.c chars
 python3 -c "$BIN2C" data/rom.bin temp/rom_bin.h temp/rom_bin.c rom_bin 
 python3 -c "$BIN2C" data/teletel2.vdt temp/page_vdt.h temp/page_vdt.c page_vdt
 
-gcc -g main.c mcu.c graphics.c modem.c -Ofast -Wall -Wextra -march=native -mtune=native -lSDL2
-emcc main.c graphics.c modem.c mcu.c temp/charset_bin.c temp/rom_bin.c temp/page_vdt.c -Itemp -s USE_SDL=2 -o web/minitel.html -O3
+gcc -g main.c mcu.c mcu_instr.c graphics.c modem.c -o native -Wall -Wextra -lSDL2 -O3 -Wno-unused
+ret=$?
+#emcc main.c graphics.c modem.c mcu.c temp/charset_bin.c temp/rom_bin.c temp/page_vdt.c -Itemp -s USE_SDL=2 -o web/minitel.html -O3
 rm -rf temp
+exit "$ret"

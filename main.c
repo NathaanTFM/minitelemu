@@ -13,7 +13,7 @@
 
 #include <SDL2/SDL.h>
 
-#define DIVIDER (60)
+#define DIVIDER (15)
 
 static SDL_Window *window;
 static SDL_Texture *texture;
@@ -141,7 +141,7 @@ static uint32_t loop_func() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
-            return 0;
+            exit(0);
         }
     }
 
@@ -211,11 +211,13 @@ int main(void) {
     modem_set_page(page, pagesize);
 
 #ifdef __EMSCRIPTEN__
-    emscripten_set_main_loop(em_loop_func, 60, true);
+    emscripten_set_main_loop(em_loop_func, DIVIDER, true);
 #else
     struct timespec t1, t2, t3;
 
-    for (;;) {
+    double freq_avg = 0;
+    int i;
+    for (i = 0; i < 100; i++) {
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double cycles = loop_func();
         clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -224,7 +226,7 @@ int main(void) {
         double diff = diff_timespec(&t2, &t1);
 
         if (delay >= diff) {
-            usleep(delay - diff);
+            //usleep(delay - diff);
         }
 
         clock_gettime(CLOCK_MONOTONIC, &t3);
@@ -235,6 +237,11 @@ int main(void) {
         printf("Freq: %.3f MHz   ", freq1_mhz);
         printf("Factor: %.1f%%   ", (100 * freq1_mhz) / 11.059200);
         printf("Capped: %.3f MHz\n", freq2_mhz);
+
+        freq_avg += freq1_mhz;
     }
+
+    printf("Freq avg: %.3f MHz\n", freq_avg / i);
+
 #endif
 }
