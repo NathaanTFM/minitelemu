@@ -83,6 +83,7 @@ void modem_update(mcu_8051_t *mcu, uint32_t cycles) {
 void modem_set_page(const uint8_t *page, size_t pagesize) {
     modem_page = page;
     modem_pagesize = pagesize;
+    modem_txdelay = 100;
 }
 
 void modem_init() {
