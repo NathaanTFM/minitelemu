@@ -13,7 +13,7 @@
 
 #include <SDL2/SDL.h>
 
-#define DIVIDER (15)
+#define DIVIDER (60)
 
 static SDL_Window *window;
 static SDL_Texture *texture;
@@ -217,7 +217,7 @@ int main(void) {
 
     double freq_avg = 0;
     int i;
-    for (i = 0; i < 100; i++) {
+    for (;; i++) {
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double cycles = loop_func();
         clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -226,7 +226,7 @@ int main(void) {
         double diff = diff_timespec(&t2, &t1);
 
         if (delay >= diff) {
-            //usleep(delay - diff);
+            usleep(delay - diff);
         }
 
         clock_gettime(CLOCK_MONOTONIC, &t3);
