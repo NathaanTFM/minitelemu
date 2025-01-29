@@ -194,6 +194,9 @@ static void execute_krg(ef9345_state_t *gfx, bool read_flag, bool incr_flag) {
 }
 
 static void execute_krl(ef9345_state_t *gfx, bool read_flag, bool incr_flag) {
+    (void)incr_flag;
+    printf("KRL command is not implemented\n");
+
     if (read_flag) {
         gfx->busy = 11.5 * 12;
     } else {
