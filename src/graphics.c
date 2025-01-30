@@ -27,6 +27,7 @@ struct ef9345_state_t {
 
     int screen_y;
     double prev_double_height[80];
+    uint32_t latch_code;
 };
 
 // EF9345 pointers formats are:
@@ -101,6 +102,12 @@ static uint16_t get_pointer_address(ef9345_state_t *gfx, bool aux_flag) {
     return get_address(x, y, block, district);
 }
 
+static void increment_pointer_z(ef9345_state_t *gfx, bool aux_flag) {
+    int reg = aux_flag ? 4 : 6;
+
+    gfx->reg[reg+1] ^= ((gfx->reg[reg+1] >> 7) ^ 1) << 7;
+}
+
 static void increment_pointer_y(ef9345_state_t *gfx, bool aux_flag, bool incr_z) {
     int reg = aux_flag ? 4 : 6;
 
@@ -113,7 +120,7 @@ static void increment_pointer_y(ef9345_state_t *gfx, bool aux_flag, bool incr_z)
             return;
 
         // That's annoying because block numbers are bit swapped
-        gfx->reg[reg+1] ^= ((gfx->reg[reg+1] >> 7) ^ 1) << 7;
+        increment_pointer_z(gfx, aux_flag);
     }
 }
 
@@ -127,6 +134,8 @@ static bool increment_pointer(ef9345_state_t *gfx, bool aux_flag, bool incr_y, b
 
         if (incr_y) {
             increment_pointer_y(gfx, aux_flag, incr_z);
+        } else if (incr_z) {
+            increment_pointer_z(gfx, aux_flag);
         }
 
         return true;
@@ -194,12 +203,52 @@ static void execute_krg(ef9345_state_t *gfx, bool read_flag, bool incr_flag) {
 }
 
 static void execute_krl(ef9345_state_t *gfx, bool read_flag, bool incr_flag) {
-    (void)incr_flag;
-    printf("KRL command is not implemented\n");
+    uint16_t address = get_pointer_address(gfx, false);
+    if (incr_flag) {
+        if (gfx->reg[7] & (1<<7)) {
+            // Block is odd
+            gfx->reg[7] &= ~(1<<7);
+            increment_pointer(gfx, false, false, false);
 
+        } else {
+            gfx->reg[7] |= (1<<7);
+        }
+    }
+
+    // KRL transfers 12 bits
+    // If block address is even, it transfers A (R3) to MSB of B+2
+    // If block address is odd,  it transfers A (R3) to LSB of B+1
+
+    uint16_t address2 = address + 0x400 + ((address & 0x400) ^ 0x400);
+    uint8_t tmp = ram_read(gfx, address2);
+    
     if (read_flag) {
+        if (address & 0x400) {
+            // Odd block
+            tmp = tmp & 0xF;
+
+        } else {
+            // Even block
+            tmp = (tmp >> 4) & 0xF;
+        }
+
+        gfx->reg[1] = ram_read(gfx, address + 0x400);
+        //gfx->reg[2] = (tmp >> (((address & 0x400) >> 8) ^ 4)) & 0xF;
+        gfx->reg[2] = tmp;
         gfx->busy = 11.5 * 12;
+
     } else {
+        if (address & 0x400) {
+            // Odd block
+            tmp = (tmp & ~0xF) | (gfx->reg[3] & 0xF);
+
+        } else {
+            // Even block
+            tmp = (tmp & ~0xF0) | ((gfx->reg[3] << 4) & 0xF0);
+        }
+
+        ram_write(gfx, address, gfx->reg[1]);
+        ram_write(gfx, address2, tmp);
         gfx->busy = 12.5 * 12;
     }
 }
@@ -340,102 +389,144 @@ void ef9345_update(ef9345_state_t *gfx, uint32_t ticks) {
     }
 }
 
-int ef9345_render(ef9345_state_t *gfx, uint8_t *dst) {
-    // This is not accurate to the real chip
-    // as we're recalculating the latched attributes every time we go through a line.
-    // The real chip most likely had a cache of the current line it's drawing
-    bool prev_double_width = false;
-    uint8_t prev_character;
+static uint8_t get_block_origin(ef9345_state_t *gfx) {
+    uint8_t bor = 0;
+    bor |= (gfx->ror >> 4) & 2;
+    bor |= (gfx->ror >> 3) & 4;
+    bor |= (gfx->ror >> 5) & 8;
+    return bor;
+}
 
-    bool latch_underline = false;
-    bool latch_insert = false;
-    bool latch_conceal = false;
-    uint8_t latch_bgcolor = 0;
+static uint32_t handle_40_short(ef9345_state_t *gfx, uint16_t address) {
+    // Check Figure 20 from the datasheet
+    // This function does exactly that
+    uint8_t short_a = ram_read(gfx, address);
+    uint8_t short_b = ram_read(gfx, address + 0x400);
 
-    int screen_y = gfx->screen_y;
-    gfx->screen_y = (gfx->screen_y + 1);
-    if (gfx->screen_y >= 25)
-        gfx->screen_y = 0;
+    uint32_t code = gfx->latch_code;
 
-    // Calculate actual y position
-    int y;
-    if (screen_y == 0) {
-        // Service row
-        y = (gfx->tgs >> 5) & 1;
+    if ((short_b & 0xE0) == 0x80) {
+        // DELimiter
+        code = 0; // There is nothing to keep
+
+        code |= (1<<13);
+        code |= ((short_b >> 2) & 1) << 12; // U
+        code |= ((short_b >> 0) & 1) << 10; // m
+        code |= ((short_b >> 1) & 1) << 8; // i
+        code |= (1<<7); // N
+        code |= (short_a & 7) << 4; // C1
+        code |= ((short_a >> 4) & 7) << 0; // C0
+
+    } else if (short_a & (1<<7)) {
+        // semi-graphic
+        code &= 0x000500; // Only keep m i
+        code |= (short_b & 0x7F) << 16; // Char code
+        code |= ((short_b >> 7) & 1) << 15; // Bit set for custom character
+        code |= (1<<13); // Bit set for semi-graphic
+        code |= (short_a & 7) << 4; // C1
+        code |= ((short_a >> 3) & 1) << 3; // F
+        code |= ((short_a >> 4) & 7) << 0; // C0
 
     } else {
-        y = (gfx->ror & 31) + (screen_y - 1);
-        if (y >= 32)
-            y -= 24;
+        // alpha(numeric)
+        code &= 0x001507; // Only keep U m i C0
+
+        code |= (short_b & 0x7F) << 16; // Char code
+        code |= ((short_b >> 7) & 1) << 15; // Bit set for custom character
+        code |= ((short_a >> 5) & 1) << 11; // L
+        code |= ((short_a >> 4) & 1) << 9; // H
+        code |= ((short_a >> 6) & 1) << 7; // N
+        code |= (short_a & 7) << 4; // C1
+        code |= ((short_a >> 3) & 1) << 3; // F
     }
+
+    // Store the previous code
+    gfx->latch_code = code;
+    return code;
+}
+
+static uint32_t handle_40_var(ef9345_state_t *gfx, uint16_t address) {
+    fprintf(stderr, "40 CHAR VAR is TODO\n");
+    //abort();
+    return 0x4141;
+}
+
+static uint32_t handle_40_long(ef9345_state_t *gfx, uint16_t address) {
+    uint8_t code_c = ram_read(gfx, address);
+    uint8_t code_b = ram_read(gfx, address + 0x400);
+    uint8_t code_a = ram_read(gfx, address + 0x800);
+
+    uint32_t code = ((uint32_t)code_c << 16) | ((uint32_t)code_b << 8) | ((uint32_t)code_a);
+    return code;
+}
+
+static void render_40(ef9345_state_t *gfx, uint8_t *dst, int y, int screen_y) {
+    // This is not accurate to the real chip as we're drawing character lines
+    // and not pixel lines (I guess?)
+    bool prev_double_width = false;
+    uint8_t prev_character;
 
     // cursor address
     uint16_t cursor = get_pointer_address(gfx, false);
 
+    // reset latch
+    gfx->latch_code = 0;
+
+    uint16_t bor = get_block_origin(gfx);
+
     for (int x = 0; x < 40; x++) {
-        uint16_t address = get_address(x, y, 0, 0);
-        uint8_t short_a = ram_read(gfx, address);
-        uint8_t short_b = ram_read(gfx, address + 0x400);
+        uint16_t address = get_address(x, y, bor & 3, (bor >> 2) & 3);
+        uint32_t code;
 
-        // all attributes
-        uint16_t character; // character code from charset
-        uint8_t bgcolor = latch_bgcolor;
-        uint8_t fgcolor;
-        bool underline = latch_underline;
-        bool insert = latch_insert;
-        bool conceal = latch_conceal;
-        bool flash;
-        bool negative;
-        bool double_width;
-        bool double_height;
+        if (gfx->pat & (1<<7)) {
+            if (gfx->tgs & (1<<6)) {
+                fprintf(stderr, "TGS6 cannot be set if PAT7 is set\n");
+                abort();
+            }
 
-        if ((short_b & 0xE0) == 0x80) {
-            // DELimiter
-            character = 0x100;
-
-            latch_underline = underline = !!(short_b & (1<<2));
-            latch_insert = insert = !!(short_b & (1<<1));
-            latch_conceal = conceal = !!(short_b & (1<<0));
-            latch_bgcolor = bgcolor = (short_a >> 4) & 7;
-            fgcolor = (short_a >> 0) & 7;
-
-            double_width = false;
-            double_height = false;
-            negative = true;
-            flash = false;
-
-        } else if (short_a & (1<<7)) {
-            // semi-graphic
-            character = 0x100 | (short_b & 0x7F);
-
-            latch_bgcolor = bgcolor = (short_a >> 4) & 7; // latched?
-            flash = !!(short_a & (1<<3));
-            fgcolor = short_a & 7;
-
-            double_width = false;
-            double_height = false;
-            negative = false;
-            latch_underline = underline = false; // TODO: check if this is latched
+            // 40 CHAR SHORT
+            code = handle_40_short(gfx, address);
 
         } else {
-            // alpha(numeric)
-            character = short_b & 0x7F;
-
-            negative = !!(short_a & (1<<6));
-            double_width = !!(short_a & (1<<5));
-            double_height = !!(short_a & (1<<4));
-            flash = !!(short_a & (1<<3));
-            fgcolor = short_a & 7;
+            if (gfx->tgs & (1<<6)) {
+                code = handle_40_long(gfx, address);
+            } else {
+                code = handle_40_var(gfx, address);
+            }
         }
 
-        if ((short_b & 0x80) && (short_b & 0x60)) {
-            fprintf(stderr, "Custom character not implemented!");
+        // Parse attributes from code
+        uint16_t character = ((code >> 16) & 0x7F) | (((code >> 12) & 15) << 7);
+
+        if (((character >> 9) & 3) == 3) {
+            fprintf(stderr, "Quadrichrome not implemented!\n");
             abort();
+        }
+
+        bool double_width = (code & (1<<11));
+        bool conceal = (code & (1<<10));
+        bool double_height = (code & (1<<9));
+        bool insert = (code & (1<<8));
+        bool negative = (code & (1<<7));
+        uint8_t fgcolor = (code >> 4) & 7;
+        bool flash = (code & (1<<3));
+        uint8_t bgcolor = code & 7;
+
+        // Underline attribute is only valid for some characters
+        bool underline = false;
+
+        if (((character >> 8) & 7) != 1) {
+            underline = (character & (1<<7));
+        }
+
+        if (character & (1<<10)) {
+            fprintf(stderr, "Custom character not implemented!");
+            //abort();
         }
 
         if (conceal || insert) {
             fprintf(stderr, "Conceal or insert not implemented!\n");
-            abort();
+            //abort();
         }
 
         if (negative) {
@@ -478,23 +569,20 @@ int ef9345_render(ef9345_state_t *gfx, uint8_t *dst) {
             if (prev_double_width)
                 graphic >>= 4;
 
-            // Left pixel is LSB, right pixel is MSB
-            for (int i = 0; i < 8; i += 2) {
-                uint8_t color1;
-                uint8_t color2;
+            for (int i = 0; i < 8; i++) {
+                uint8_t color;
 
                 if (underline && draw_y == 9 && char_y == 9) {
-                    color1 = color2 = fgcolor;
+                    color = fgcolor;
 
                 } else if (double_width) {
-                    color1 = color2 = (graphic & (1 << (i/2))) ? fgcolor : bgcolor;
+                    color = (graphic & (1 << (i/2))) ? fgcolor : bgcolor;
 
                 } else {
-                    color1 = (graphic & (1 << i)) ? fgcolor : bgcolor;
-                    color2 = (graphic & (2 << i)) ? fgcolor : bgcolor;
+                    color = (graphic & (1 << i)) ? fgcolor : bgcolor;
                 }
 
-                dst[draw_y * 160 + x * 4 + i/2] = (color1) | (color2 << 4);
+                dst[draw_y * 320 + x * 8 + i] = (color) | (color << 4);
             }
         }
 
@@ -502,6 +590,129 @@ int ef9345_render(ef9345_state_t *gfx, uint8_t *dst) {
         gfx->prev_double_height[x] = double_height;
         prev_double_width = double_width && !prev_double_width;
         prev_character = character;
+    }
+}
+
+static void render_80(ef9345_state_t *gfx, uint8_t *dst, int y, int screen_y) {
+    // cursor address
+    uint16_t cursor = get_pointer_address(gfx, false);
+
+    // reset latch
+    gfx->latch_code = 0;
+
+    uint16_t bor = get_block_origin(gfx);
+
+    for (int x = 0; x < 80; x += 2) {
+        uint16_t address = get_address(x/2, y, bor & 3, (bor >> 2) & 3);
+        uint32_t code;
+
+        if (gfx->pat & (1<<7)) {
+            fprintf(stderr, "PAT7 cannot be set if 80 Char mode\n");
+            abort();
+        }
+
+        // C0 is left, C1 is right
+        uint16_t code_c;
+        code_c = ram_read(gfx, address);
+        code_c |= (ram_read(gfx, address + 0x400) << 8);
+
+        // MSB A is left, LSB A is right
+        uint8_t code_a = 0;
+        if (gfx->tgs & (1<<6)) {
+            code_a = ram_read(gfx, address + 0x800);
+        }
+
+        // Parse attributes
+        for (int xd = 0; xd < 2; xd++) {
+            uint8_t character = code_c & 0xFF;
+
+            bool negative = code_a & (1<<7);
+            bool flash = code_a & (1<<6);
+            bool underline = code_a & (1<<5);
+            bool color_set = code_a & (1<<4);
+
+            // I have no idea what color_set does
+            if (color_set) {
+                fprintf(stderr, "Color set not implemented!\n");
+                //abort();
+            }
+            
+            uint8_t fgcolor = 7;
+            uint8_t bgcolor = 0;
+
+            if (flash && (gfx->flash_state & 2) ^ (negative ? 2 : 0)) {
+                fgcolor = bgcolor;
+            }
+
+            if ((gfx->mat & (1<<6)) && (address + 0x400*xd) == cursor && (!(gfx->mat & (1<<5)) || (gfx->flash_state & 1))) {
+                if (gfx->mat & (1<<4)) {
+                    underline = !underline;
+
+                } else {
+                    fgcolor ^= 7;
+                    bgcolor ^= 7;
+                }
+            }
+
+            for (int draw_y = 0; draw_y < 10; draw_y++) {
+                uint8_t graphic;
+
+                if (character & 0x80) {
+                    fprintf(stderr, "Mosaic is not implemented!\n");
+                    graphic = gfx->charset[draw_y]; // Dummy value
+
+                } else {
+                    graphic = gfx->charset[character * 10 + draw_y];
+                }
+
+                // Left pixel is LSB, right pixel is MSB
+                for (int i = 0; i < 8; i += 2) {
+                    uint8_t color1;
+                    uint8_t color2;
+
+                    if (underline && draw_y == 9 && draw_y == 9) {
+                        color1 = color2 = fgcolor;
+
+                    } else {
+                        color1 = (graphic & (1 << i)) ? fgcolor : bgcolor;
+                        color2 = (graphic & (2 << i)) ? fgcolor : bgcolor;
+                    }
+
+                    dst[draw_y * 320 + (x + xd) * 4 + i/2] = (color1) | (color2 << 4);
+                }
+            }
+            
+            // For next loop
+            code_c >>= 8;
+            code_a <<= 4; 
+        }
+        
+    }
+}
+
+int ef9345_render(ef9345_state_t *gfx, uint8_t *dst) {
+    int screen_y = gfx->screen_y;
+    gfx->screen_y++;
+    if (gfx->screen_y >= 25)
+        gfx->screen_y = 0;
+
+    // Calculate actual y position
+    int y;
+    if (screen_y == 0) {
+        // Service row
+        y = (gfx->tgs >> 5) & 1;
+
+    } else {
+        y = (gfx->ror & 31) + (screen_y - 1);
+        if (y >= 32)
+            y -= 24;
+    }
+
+    if (gfx->tgs & (1 << 7)) {
+        render_80(gfx, dst, y, screen_y);
+
+    } else {
+        render_40(gfx, dst, y, screen_y);
     }
 
     return screen_y;

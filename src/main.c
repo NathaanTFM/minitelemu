@@ -19,6 +19,7 @@
 static const uint8_t KB_MAP_1[] = {4, 2, 3, 1, 14, 12, 13, 11};
 static const uint8_t KB_MAP_2[] = {15, 10, 9, 8, 7, 6, 5, 0};
 
+// https://entropie.org/3615/wp-content/uploads/2020/08/DWOEDv0.jpg
 static uint8_t get_code_from_key(SDL_Keycode sym) {
     switch (sym) {
     case SDLK_a: return 0x39;
@@ -65,6 +66,12 @@ static uint8_t get_code_from_key(SDL_Keycode sym) {
     case SDLK_7: return 0xC6;
     case SDLK_8: return 0xC8;
     case SDLK_9: return 0xCF;
+
+    case SDLK_LEFT: return 0xC0;
+    case SDLK_RIGHT: return 0xD0;
+    case SDLK_UP: return 0x10;
+    case SDLK_DOWN: return 0x40;
+
     default: return 0;
     }
 }
@@ -138,18 +145,24 @@ static mcu_8051_config_t config = {
 
 static void render_screen() {
     for (int i = 0; i < 25; i++) {
-        static uint8_t line[10*40*8/2];
-        static uint8_t linergb[10][40*8*2];
+        static uint8_t line[10*80*8/2]; // 10 pixels height, 80 characters long, 8 pixels per character, 4/8 bits per color
+        static uint8_t linergb[20][80*8*2]; // 10 pixels height, 80 characters long, 8 pixels per character, 2 bytes per color
         int y = ef9345_render(gfx, line);
 
         for (int dy = 0; dy < 10; dy++) {
-            for (int x = 0; x < 40 * 8; x += 2) {
-                uint8_t color = line[dy * 160 + x/2];
+            // loop for each draw y
+
+            for (int x = 0; x < 80 * 4; x++) {
+                // loop for each pixel
+                uint8_t color = line[dy * 320 + x];
 
                 for (int j = 0; j < 2; j++) {
                     // GB,AR
-                    linergb[dy][(x+j) * 2 + 0] = (((color >> 1) & 1) * 0xF0) | (((color >> 2) & 1) * 0xF);
-                    linergb[dy][(x+j) * 2 + 1] =  0xF0 | (((color >> 0) & 1) * 0xF);
+                    int dx = x * 2 + j;
+
+                    uint16_t abgr = 0xF000 | (((color >> 0) & 1) * 0xF00) | (((color >> 1) & 1) * 0xF0) | (((color >> 2) & 1) * 0xF);
+                    linergb[dy*2+0][dx*2+0] = linergb[dy*2+1][dx*2+0] = abgr;
+                    linergb[dy*2+0][dx*2+1] = linergb[dy*2+1][dx*2+1] = abgr >> 8;
                     color >>= 4;
                 }
                 
@@ -158,9 +171,9 @@ static void render_screen() {
 
         SDL_Rect rect;
         rect.x = 0;
-        rect.y = y * 10;
-        rect.w = 40*8;
-        rect.h = 10;
+        rect.y = y * 20;
+        rect.w = 80*8;
+        rect.h = 20;
         int ret = SDL_UpdateTexture(texture, &rect, linergb, sizeof(*linergb));
         if (ret != 0) {
             puts(SDL_GetError());
@@ -170,8 +183,8 @@ static void render_screen() {
     SDL_Rect rect;
     rect.x = 0;
     rect.y = 0;
-    rect.w = 40*8;
-    rect.h = 25*10;
+    rect.w = 80*8;
+    rect.h = 25*20;
     SDL_RenderClear(render);
     SDL_RenderCopy(render, texture, NULL, &rect);
     SDL_RenderPresent(render);
@@ -275,12 +288,12 @@ int main(void) {
     SDL_Init(SDL_INIT_VIDEO);
     SDL_StopTextInput();
 
-    window = SDL_CreateWindow("EF9345", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 8 * 40 * 3, 10 * 25 * 3, SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow("EF9345", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 80 * 8, 10 * 25 * 2, SDL_WINDOW_RESIZABLE);
     render = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    SDL_RenderSetLogicalSize(render, 8 * 40, 10 * 25);
+    SDL_RenderSetLogicalSize(render, 80 * 8, 10 * 25 * 2);
 
-    texture = SDL_CreateTexture(render, SDL_PIXELFORMAT_ARGB4444, SDL_TEXTUREACCESS_STREAMING, 8 * 40, 10 * 25);
+    texture = SDL_CreateTexture(render, SDL_PIXELFORMAT_ARGB4444, SDL_TEXTUREACCESS_STREAMING, 80 * 8, 10 * 25 * 2);
     SDL_SetRenderDrawColor(render, 0, 0, 0, 255);
     SDL_RenderClear(render);
     SDL_RenderPresent(render);
