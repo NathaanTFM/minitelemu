@@ -227,7 +227,7 @@ static double diff_timespec(const struct timespec *time1, const struct timespec 
     return (time1->tv_sec - time0->tv_sec) * 1000000.0 + (time1->tv_nsec - time0->tv_nsec) / 1000.0;
 }
 
-static uint32_t loop_func() {
+static void check_events() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
@@ -241,10 +241,11 @@ static uint32_t loop_func() {
             }
         }
     }
+}
 
+static uint32_t run_cpu(uint32_t min_cycles) {
     uint32_t cycles = 0;
-    
-    while (cycles < (11059200 / 12 / DIVIDER)) {
+    while (cycles < min_cycles) {
         uint32_t instr_cycles = mcu_8051_run_instr(mcu);
         cycles += instr_cycles;
 
@@ -252,21 +253,24 @@ static uint32_t loop_func() {
         modem_update(mcu, instr_cycles * 12);
     }
 
-    render_screen();
     return cycles;
 }
 
 #ifdef __EMSCRIPTEN__
-static void em_loop_func() {
-    struct timespec t1, t2;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    double cycles = loop_func();
-    clock_gettime(CLOCK_MONOTONIC, &t2);
+static struct timespec em_time;
 
-    double diff = diff_timespec(&t2, &t1);
-    double freq1_mhz = (cycles * 12) / diff;
-    printf("Freq: %.3f MHz   ", freq1_mhz);
-    printf("Factor: %.1f%%\n", (100 * freq1_mhz) / 11.059200);
+static void em_loop_func() {
+    struct timespec time;
+    clock_gettime(CLOCK_MONOTONIC, &time);
+
+    // timediff is in us
+    double timediff = diff_timespec(&time, &em_time);
+
+    check_events();
+    run_cpu(timediff * 11.059200/12.);
+    render_screen();
+
+    em_time = time;
 }
 
 #include "rom_bin.h"
@@ -275,7 +279,9 @@ static void em_loop_func() {
 
 #define MIN(a, b) ((a) <= (b) ? (a) : (b))
 
-static void em_data_init() {
+static void em_init() {
+    clock_gettime(CLOCK_MONOTONIC, &em_time);
+
     memcpy(rom, rom_bin, MIN(rom_bin_len, sizeof(rom)));
     memcpy(charset, charset_bin, MIN(charset_bin_len, sizeof(charset)));
     page = (uint8_t *)page_vdt;
@@ -285,7 +291,7 @@ static void em_data_init() {
 
 int main(void) {
 #ifdef __EMSCRIPTEN__
-    em_data_init();
+    em_init();
 #else
     data_init();
 #endif
@@ -309,7 +315,7 @@ int main(void) {
     modem_set_page(page, pagesize);
 
 #ifdef __EMSCRIPTEN__
-    emscripten_set_main_loop(em_loop_func, DIVIDER, true);
+    emscripten_set_main_loop(em_loop_func, 0, true);
 #else
     struct timespec t1, t2, t3;
 
@@ -319,7 +325,9 @@ int main(void) {
     for (;;) {
         t3 = t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
-        double cycles = loop_func();
+        check_events();
+        double cycles = loop_func(11059200 / 12 / DIVIDER);
+        render_screen();
         clock_gettime(CLOCK_MONOTONIC, &t2);
 
         uint64_t delay = ((double)cycles / (11.059200 / 12));
