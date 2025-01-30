@@ -326,7 +326,7 @@ int main(void) {
         t3 = t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
         check_events();
-        double cycles = loop_func(11059200 / 12 / DIVIDER);
+        double cycles = run_cpu(11059200 / 12 / DIVIDER);
         render_screen();
         clock_gettime(CLOCK_MONOTONIC, &t2);
 
