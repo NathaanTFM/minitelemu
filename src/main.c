@@ -144,41 +144,47 @@ static mcu_8051_config_t config = {
 };
 
 static void render_screen() {
+    uint8_t *pixels;
+    int pitch;
+    SDL_LockTexture(texture, NULL, (void **)&pixels, &pitch);
+
     for (int i = 0; i < 25; i++) {
         static uint8_t line[10*80*8/2]; // 10 pixels height, 80 characters long, 8 pixels per character, 4/8 bits per color
-        static uint8_t linergb[20][80*8*2]; // 10 pixels height, 80 characters long, 8 pixels per character, 2 bytes per color
+        //static uint8_t linergb[20][80*8*2]; // 10 pixels height, 80 characters long, 8 pixels per character, 2 bytes per color
         int y = ef9345_render(gfx, line);
 
-        for (int dy = 0; dy < 10; dy++) {
+        for (int r = 0; r < 10; r++) {
             // loop for each draw y
+            int dy = y * 10 + r;
 
             for (int x = 0; x < 80 * 4; x++) {
                 // loop for each pixel
-                uint8_t color = line[dy * 320 + x];
+                uint8_t color = line[r * 320 + x];
 
                 for (int j = 0; j < 2; j++) {
                     // GB,AR
                     int dx = x * 2 + j;
 
-                    uint16_t abgr = 0xF000 | (((color >> 0) & 1) * 0xF00) | (((color >> 1) & 1) * 0xF0) | (((color >> 2) & 1) * 0xF);
-                    linergb[dy*2+0][dx*2+0] = linergb[dy*2+1][dx*2+0] = abgr;
-                    linergb[dy*2+0][dx*2+1] = linergb[dy*2+1][dx*2+1] = abgr >> 8;
+                    uint8_t red = ((color >> 0) & 1) * 0xFF;
+                    uint8_t green = ((color >> 1) & 1) * 0xFF;
+                    uint8_t blue = ((color >> 2) & 1) * 0xFF;
+
+                    //uint16_t abgr = 0xF000 | (((color >> 0) & 1) * 0xF00) | (((color >> 1) & 1) * 0xF0) | (((color >> 2) & 1) * 0xF);
+                    //linergb[dy*2+0][dx*2+0] = linergb[dy*2+1][dx*2+0] = abgr;
+                    //linergb[dy*2+0][dx*2+1] = linergb[dy*2+1][dx*2+1] = abgr >> 8;
+
+                    pixels[(dy * pitch) + (dx * 4) + 0] = 0xFF;
+                    pixels[(dy * pitch) + (dx * 4) + 1] = blue;
+                    pixels[(dy * pitch) + (dx * 4) + 2] = green;
+                    pixels[(dy * pitch) + (dx * 4) + 3] = red;
                     color >>= 4;
                 }
                 
             }
         }
-
-        SDL_Rect rect;
-        rect.x = 0;
-        rect.y = y * 20;
-        rect.w = 80*8;
-        rect.h = 20;
-        int ret = SDL_UpdateTexture(texture, &rect, linergb, sizeof(*linergb));
-        if (ret != 0) {
-            puts(SDL_GetError());
-        }
     }
+
+    SDL_UnlockTexture(texture);
 
     SDL_Rect rect;
     rect.x = 0;
@@ -293,7 +299,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
     SDL_RenderSetLogicalSize(render, 80 * 8, 10 * 25 * 2);
 
-    texture = SDL_CreateTexture(render, SDL_PIXELFORMAT_ARGB4444, SDL_TEXTUREACCESS_STREAMING, 80 * 8, 10 * 25 * 2);
+    texture = SDL_CreateTexture(render, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, 80 * 8, 10 * 25);
     SDL_SetRenderDrawColor(render, 0, 0, 0, 255);
     SDL_RenderClear(render);
     SDL_RenderPresent(render);
