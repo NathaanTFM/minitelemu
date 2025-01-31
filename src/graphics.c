@@ -26,7 +26,7 @@ struct ef9345_state_t {
     uint8_t ror;
 
     int screen_y;
-    double prev_double_height[80];
+    double above_double_height[80];
     uint32_t latch_code;
 };
 
@@ -65,7 +65,7 @@ static uint16_t get_address(int x, int y, int block, int district) {
     } else {
         if (y & 1) {
             address |= (1 << 7);
-            address |= (~x & 0x18);
+            address |= ((~x & 0x30) << 1);
 
             if (!(block & 1))
                 address |= ((x & 8) << 7);
@@ -102,48 +102,57 @@ static uint16_t get_pointer_address(ef9345_state_t *gfx, bool aux_flag) {
     return get_address(x, y, block, district);
 }
 
+// I'm not sure this is ever used on the chip
 static void increment_pointer_z(ef9345_state_t *gfx, bool aux_flag) {
-    int reg = aux_flag ? 4 : 6;
-
-    gfx->reg[reg+1] ^= ((gfx->reg[reg+1] >> 7) ^ 1) << 7;
-}
-
-static void increment_pointer_y(ef9345_state_t *gfx, bool aux_flag, bool incr_z) {
-    int reg = aux_flag ? 4 : 6;
-
-    // Attempt to increment Y then
-    if ((gfx->reg[reg] & 31) >= 31) {
-        gfx->reg[reg] -= (24 - 1);
-
-        // Attempt to increment Z then
-        if (!incr_z)
-            return;
-
-        // That's annoying because block numbers are bit swapped
-        increment_pointer_z(gfx, aux_flag);
-    }
+    int reg = aux_flag ? 5 : 7;
+    gfx->reg[reg] ^= ((gfx->reg[reg] >> 7) ^ 1) << 7;
 }
 
 // Returns true if overflow occured
-static bool increment_pointer(ef9345_state_t *gfx, bool aux_flag, bool incr_y, bool incr_z) {
+static bool increment_pointer_y(ef9345_state_t *gfx, bool aux_flag) {
     int reg = aux_flag ? 4 : 6;
+    uint8_t value = gfx->reg[reg];
+    bool overflow = false;
 
-    // Attempt to increment X
-    if ((gfx->reg[reg+1] & 63) >= 39) {
-        gfx->reg[reg+1] -= (40 - 1);
+    int y = (value & 31) + 1;
+    if (y >= 32) {
+        y = 8;
+        overflow = true;
+    }
+    gfx->reg[reg] = (value & ~31) | (y & 31);
 
-        if (incr_y) {
-            increment_pointer_y(gfx, aux_flag, incr_z);
-        } else if (incr_z) {
-            increment_pointer_z(gfx, aux_flag);
-        }
+    return overflow;
+}
 
-        return true;
+// Returns true if overflow occured
+static bool increment_pointer_x(ef9345_state_t *gfx, bool aux_flag, bool incr_80) {
+    int reg = aux_flag ? 5 : 7;
+    uint8_t value = gfx->reg[reg];
+    bool overflow = false;
+
+    if (incr_80 && (value & 0x80) == 0) {
+        // B0 is not set, set it
+        value |= 0x80;
 
     } else {
-        gfx->reg[reg+1] += 1;
-        return false;
+        if (incr_80) {
+            // B0 is set, clear it and then increment X
+            value &= ~0x80;
+        }
+
+        // X incrementation
+        int x = (value & 63) + 1;
+
+        if (x >= 40 && (x & 7) == 0) {
+            x = 0;
+            overflow = true;
+        }
+
+        value = (value & ~63) | (x & 63);
     }
+
+    gfx->reg[reg] = value;
+    return overflow;
 }
 
 static void execute_ind(ef9345_state_t *gfx, int reg, bool read_flag) {
@@ -181,8 +190,10 @@ static void execute_ind(ef9345_state_t *gfx, int reg, bool read_flag) {
 
 static void execute_krg(ef9345_state_t *gfx, bool read_flag, bool incr_flag) {
     uint16_t address = get_pointer_address(gfx, false);
-    if (incr_flag) 
-        increment_pointer(gfx, false, false, false);
+    if (incr_flag) {
+        // KRG can increment X, but it doesn't increment Y.
+        increment_pointer_x(gfx, false, false);
+    }
     
     if (address & 0x400) {
         fprintf(stderr, "Block is not even!\n");
@@ -205,14 +216,8 @@ static void execute_krg(ef9345_state_t *gfx, bool read_flag, bool incr_flag) {
 static void execute_krl(ef9345_state_t *gfx, bool read_flag, bool incr_flag) {
     uint16_t address = get_pointer_address(gfx, false);
     if (incr_flag) {
-        if (gfx->reg[7] & (1<<7)) {
-            // Block is odd
-            gfx->reg[7] &= ~(1<<7);
-            increment_pointer(gfx, false, false, false);
-
-        } else {
-            gfx->reg[7] |= (1<<7);
-        }
+        // KRL only increments X, but also increments B0 (which is LSB of a longer byte pos)
+        increment_pointer_x(gfx, false, true);
     }
 
     // KRL transfers 12 bits
@@ -278,8 +283,9 @@ static void execute_move_buffer(ef9345_state_t *gfx, bool ap_to_mp_flag, bool no
             ram_write(gfx, dst_addr + 0x400*i, ram_read(gfx, src_addr + 0x400*i));
         }
 
-        loop = !increment_pointer(gfx, false, false, false);
-        loop = !increment_pointer(gfx, true, false, false) && loop;
+        // That's just a guess
+        loop = !increment_pointer_x(gfx, false, false);
+        loop = !increment_pointer_x(gfx, true, false) && loop;
     }
 }
 
@@ -289,9 +295,13 @@ static void execute_mvt(ef9345_state_t *gfx, bool ap_to_mp_flag, bool no_stop_fl
 
 static void execute_oct(ef9345_state_t *gfx, bool read_flag, bool aux_flag, bool incr_flag) {
     uint16_t address = get_pointer_address(gfx, aux_flag);
-    if (incr_flag)
-        increment_pointer(gfx, aux_flag, !aux_flag, false); // TODO - check if !aux_flag is valid
-    
+    if (incr_flag) {
+        // OCT increments X, and then Y only if MP
+        if (increment_pointer_x(gfx, aux_flag, false) && !aux_flag) {
+            increment_pointer_y(gfx, aux_flag);
+        }
+    }
+
     if (read_flag) {
         gfx->reg[1] = ram_read(gfx, address);
         gfx->busy = 4.5 * 12;
@@ -304,6 +314,14 @@ static void execute_oct(ef9345_state_t *gfx, bool read_flag, bool aux_flag, bool
 
 static void execute_command(ef9345_state_t *gfx) {
     uint8_t cmd = gfx->reg[0];
+
+#ifdef GFX_DEBUG
+    printf("EXECUTE -");
+    for (int i = 0; i < 8; i++) {
+        printf(" %02X", gfx->reg[i]);
+    }
+    printf("\n");
+#endif
 
     if ((cmd & 0xF0) == 0x80) {
         int reg = cmd & 7;
@@ -463,8 +481,10 @@ static uint32_t handle_40_long(ef9345_state_t *gfx, uint16_t address) {
 static void render_40(ef9345_state_t *gfx, uint8_t *dst, int y, int screen_y) {
     // This is not accurate to the real chip as we're drawing character lines
     // and not pixel lines (I guess?)
-    bool prev_double_width = false;
-    uint8_t prev_character;
+
+    bool prev_double_width = false; // Was the previous character the left part of a double width character?
+    int prev_draw_height = 0; // 0 if not, 1 if upper, 2 if lower
+    uint8_t prev_character = 0;
 
     // cursor address
     uint16_t cursor = get_pointer_address(gfx, false);
@@ -489,9 +509,9 @@ static void render_40(ef9345_state_t *gfx, uint8_t *dst, int y, int screen_y) {
 
         } else {
             if (gfx->tgs & (1<<6)) {
-                code = handle_40_long(gfx, address);
-            } else {
                 code = handle_40_var(gfx, address);
+            } else {
+                code = handle_40_long(gfx, address);
             }
         }
 
@@ -550,22 +570,38 @@ static void render_40(ef9345_state_t *gfx, uint8_t *dst, int y, int screen_y) {
             }
         }
 
-        if (prev_double_width)
+        // 0 if none, 1 if upper, 2 if lower
+        int draw_height = 0;
+
+        // If the previous character is double width,
+        // we must draw the same character (and its right side only),
+        // and with the same "draw height"
+        if (prev_double_width) {
             character = prev_character;
+            draw_height = prev_draw_height;
+
+        } else if (double_height) {
+            // We can make our own decisions!
+            draw_height = (screen_y != 0 && gfx->above_double_height[x]) ? 2 : 1;
+        }
 
         for (int draw_y = 0; draw_y < 10; draw_y++) {
             uint8_t graphic;
 
             int char_y = draw_y;
-            if (double_height) {
+            if (draw_height != 0) {
                 char_y /= 2;
 
-                if (screen_y != 0 && gfx->prev_double_height[x]) {
+                if (draw_height == 2) {
                     char_y += 5;
                 }
             }
 
             graphic = gfx->charset[character * 10 + char_y];
+
+            // We must draw the right side of the character if the previous
+            // character was double width.
+            // Shift the graphic to get that result
             if (prev_double_width)
                 graphic >>= 4;
 
@@ -587,8 +623,9 @@ static void render_40(ef9345_state_t *gfx, uint8_t *dst, int y, int screen_y) {
         }
 
         // For double width and height
-        gfx->prev_double_height[x] = double_height;
+        gfx->above_double_height[x] = double_height && !(screen_y != 0 && gfx->above_double_height[x]);
         prev_double_width = double_width && !prev_double_width;
+        prev_draw_height = draw_height;
         prev_character = character;
     }
 }
