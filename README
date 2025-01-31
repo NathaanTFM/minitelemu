@@ -1,31 +1,34 @@
-Ce repo contient un émulateur Minitel en Python avec le MCU
-8051 implémenté en C.
+Ce repo contient un émulateur Minitel en C.
 
-L'idée ici est de tout implémenter en C, mais de garder une
-certaine indépendance dans l'implémentation du contrôleur
-8051 ainsi que dans l'implémentation de la carte graphique
-afin de permettre sa réutilisation dans d'autres projets.
+L'idée ici est de garder une certaine indépendance dans
+l'implémentation du contrôleur 8051 ainsi que dans
+l'implémentation de la carte graphique afin de permettre sa
+réutilisation dans d'autres projets.
 
 L'émulation est TRÈS expérimentale :
 
 - le contrôleur graphique EF9345 n'est que partiellement
-  implémenté (le mode 40 colonnes et caractères à longueur
-  variable sont partiellement implémentés, mais rien de
-  plus).
+  implémenté. Le mode 40 colonnes est relativement complet,
+  (hormis les caractères à code variable), le mode 80 colonnes
+  est partiellement implémenté. Beaucoup de commandes sont
+  manquantes !
 
 - le contrôleur logique 8051 est aussi partiellement
   implémenté et manque certaines fonctions en lien avec
   les timers, le serial, ou autres interruptions
-  (par exemple, les priorités d'interruption).
+  (par exemple, les priorités d'interruption), qui ne
+  sont pas utilisées par le Minitel.
 
-La version en C est à privilégier pour les mises à jour.
+Le projet inclut le charset de l'E9345 présent dans le
+Minitel sous format binaire (dans le fichier data/charset.bin).
+Ce fichier est dans un format assez particulier et n'est
+pas compatible avec les autres émulateurs sans convertir
+au préalable.
 
-Le projet inclus le charset de l'E9345 présent dans le
-Minitel sous format PNG (dans le fichier data/charset.png)
-ainsi qu'une ROM du Minitel 1B et une page de test en VDT
-qui sera envoyée par le modem en local.
+Il contient aussi une ROM du Minitel 1B et une page de test
+en VDT qui sera envoyée par le modem (après connexion).
 
-Pour compiler le processeur logique : il n'y a pas de
-Makefile pour le moment. La commande pour build est dans
-le fichier build.sh. Il n'y a aucune dépendance, donc
-normalement rien de compliqué.
+Pour compiler l'émulateur : il n'y a pas de Makefile pour le
+moment. La commande pour compiler est dans le fichier build.sh.
+Il y a une dépendance sur SDL2 pour l'affichage graphique,
+dans le fichier src/main.c.
