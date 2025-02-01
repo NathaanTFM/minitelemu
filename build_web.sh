@@ -9,10 +9,9 @@ open(sys.argv[3], 'w').write('const char ' + sys.argv[4] + '[] = {' + ','.join(h
 
 python3 -c "$BIN2C" data/charset.bin temp/charset_bin.h temp/charset_bin.c charset_bin
 python3 -c "$BIN2C" data/rom.bin temp/rom_bin.h temp/rom_bin.c rom_bin
-python3 -c "$BIN2C" data/teletel2.vdt temp/page_vdt.h temp/page_vdt.c page_vdt
 
 mkdir web -p
-emcc src/main.c src/graphics.c src/modem.c src/mcu.c src/mcu_instr.c temp/charset_bin.c temp/rom_bin.c temp/page_vdt.c -Itemp -s USE_SDL=2 -o web/minitel.html -O3
+emcc src/main_web.c src/minitel.c src/graphics.c src/modem.c src/mcu.c src/mcu_instr.c temp/charset_bin.c temp/rom_bin.c -Itemp -s USE_SDL=2 -o web/minitel.html -O3
 ret=$?
 
 rm -f temp/charset_bin.h temp/charset_bin.c temp/rom_bin.h temp/rom_bin.c temp/page_vdt.h temp/page_vdt.c

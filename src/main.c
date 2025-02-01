@@ -1,11 +1,8 @@
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#endif
-
 #define _GNU_SOURCE
-#include "mcu.h"
-#include "graphics.h"
-#include "modem.h"
+
+#include "minitel.h"
+#include "keyboard.h"
+#include "render.h"
 
 #include <stdio.h>
 #include <time.h>
@@ -16,185 +13,15 @@
 
 #define DIVIDER (60)
 
-static const uint8_t KB_MAP_1[] = {4, 2, 3, 1, 14, 12, 13, 11};
-static const uint8_t KB_MAP_2[] = {15, 10, 9, 8, 7, 6, 5, 0};
-
-// https://entropie.org/3615/wp-content/uploads/2020/08/DWOEDv0.jpg
-static uint8_t get_code_from_key(SDL_Keycode sym) {
-    switch (sym) {
-    case SDLK_a: return 0x39;
-    case SDLK_z: return 0x29;
-    case SDLK_e: return 0x25;
-    case SDLK_r: return 0x35;
-    case SDLK_t: return 0x15;
-    case SDLK_y: return 0x45;
-    case SDLK_u: return 0xB9;
-    case SDLK_i: return 0xC9;
-    case SDLK_o: return 0xD9;
-    case SDLK_p: return 0xE9;
-    case SDLK_q: return 0x3A;
-    case SDLK_s: return 0x2A;
-    case SDLK_d: return 0x26;
-    case SDLK_f: return 0x36;
-    case SDLK_g: return 0x16;
-    case SDLK_h: return 0x46;
-    case SDLK_j: return 0xBA;
-    case SDLK_k: return 0xCA;
-    case SDLK_l: return 0xDA;
-    case SDLK_m: return 0xEA;
-    case SDLK_w: return 0x3F;
-    case SDLK_x: return 0x2F;
-    case SDLK_c: return 0x28;
-    case SDLK_v: return 0x38;
-    case SDLK_b: return 0x18;
-    case SDLK_n: return 0x48;
-    case SDLK_SPACE: return 0x4F;
-    case SDLK_TAB: return 0x1A;
-    case SDLK_RALT: return 0x1F;
-    case SDLK_LCTRL: return 0x4A;
-    case SDLK_LSHIFT: return 0xB0;
-    case SDLK_RSHIFT: return 0xB0;
-    case SDLK_ESCAPE: return 0x27;
-
-    case SDLK_0: return 0xB8;
-    case SDLK_1: return 0xE6;
-    case SDLK_2: return 0xE8;
-    case SDLK_3: return 0xEF;
-    case SDLK_4: return 0xD6;
-    case SDLK_5: return 0xD8;
-    case SDLK_6: return 0xDF;
-    case SDLK_7: return 0xC6;
-    case SDLK_8: return 0xC8;
-    case SDLK_9: return 0xCF;
-
-    case SDLK_LEFT: return 0xC0;
-    case SDLK_RIGHT: return 0xD0;
-    case SDLK_UP: return 0x10;
-    case SDLK_DOWN: return 0x40;
-
-    default: return 0;
-    }
-}
-
-static bool keydown[16][16];
-
-#define NELEMS(tab) ((sizeof(*tab) / sizeof(tab)))
-
 static SDL_Window *window;
 static SDL_Texture *texture;
 static SDL_Renderer *render;
 
 static uint8_t rom[0x2000];
 static uint8_t charset[0x2800];
-static uint8_t vram[0x2000];
 
 static uint8_t *page;
 static size_t pagesize;
-
-static mcu_8051_t *mcu;
-static ef9345_state_t *gfx;
-
-static uint8_t load_xram8(void *arg, uint8_t addr) {
-    (void)arg;
-    return ef9345_read(gfx, addr);
-}
-
-static uint8_t load_xram16(void *arg, uint16_t addr) {
-    return load_xram8(arg, addr & 0xFF);
-}
-
-static void store_xram8(void *arg, uint8_t addr, uint8_t value) {
-    (void)arg;
-    return ef9345_write(gfx, addr, value);
-}
-
-static void store_xram16(void *arg, uint16_t addr, uint8_t value) {
-    store_xram8(arg, addr & 0xFF, value);
-}
-
-static void set_port(void *arg, uint8_t port, uint8_t value) {
-    (void)arg;
-
-    if (port == 1) {
-        int left = KB_MAP_1[value & 7];
-        uint8_t mask = 0;
-
-        for (int i = 0; i < 8; i++) {
-            int right = KB_MAP_2[i];
-
-            if (keydown[left][right]) {
-                mask |= (1 << i);
-            }
-        }
-
-        mcu_8051_set_port(mcu, 2, 0xFF & ~mask);
-    }
-}
-
-static mcu_8051_config_t config = {
-    .rom = rom,
-    .rom_mask = 0x1FFF,
-
-    .load_xram8_cb = load_xram8,
-    .load_xram16_cb = load_xram16,
-    .store_xram8_cb = store_xram8,
-    .store_xram16_cb = store_xram16,
-
-    .set_port_cb = set_port,
-};
-
-static void render_screen() {
-    uint8_t *pixels;
-    int pitch;
-    SDL_LockTexture(texture, NULL, (void **)&pixels, &pitch);
-
-    for (int i = 0; i < 25; i++) {
-        static uint8_t line[10*80*8/2]; // 10 pixels height, 80 characters long, 8 pixels per character, 4/8 bits per color
-        //static uint8_t linergb[20][80*8*2]; // 10 pixels height, 80 characters long, 8 pixels per character, 2 bytes per color
-        int y = ef9345_render(gfx, line);
-
-        for (int r = 0; r < 10; r++) {
-            // loop for each draw y
-            int dy = y * 10 + r;
-
-            for (int x = 0; x < 80 * 4; x++) {
-                // loop for each pixel
-                uint8_t color = line[r * 320 + x];
-
-                for (int j = 0; j < 2; j++) {
-                    // GB,AR
-                    int dx = x * 2 + j;
-
-                    uint8_t red = ((color >> 0) & 1) * 0xFF;
-                    uint8_t green = ((color >> 1) & 1) * 0xFF;
-                    uint8_t blue = ((color >> 2) & 1) * 0xFF;
-
-                    //uint16_t abgr = 0xF000 | (((color >> 0) & 1) * 0xF00) | (((color >> 1) & 1) * 0xF0) | (((color >> 2) & 1) * 0xF);
-                    //linergb[dy*2+0][dx*2+0] = linergb[dy*2+1][dx*2+0] = abgr;
-                    //linergb[dy*2+0][dx*2+1] = linergb[dy*2+1][dx*2+1] = abgr >> 8;
-
-                    pixels[(dy * pitch) + (dx * 4) + 0] = 0xFF;
-                    pixels[(dy * pitch) + (dx * 4) + 1] = blue;
-                    pixels[(dy * pitch) + (dx * 4) + 2] = green;
-                    pixels[(dy * pitch) + (dx * 4) + 3] = red;
-                    color >>= 4;
-                }
-                
-            }
-        }
-    }
-
-    SDL_UnlockTexture(texture);
-
-    SDL_Rect rect;
-    rect.x = 0;
-    rect.y = 0;
-    rect.w = 80*8;
-    rect.h = 25*20;
-    SDL_RenderClear(render);
-    SDL_RenderCopy(render, texture, NULL, &rect);
-    SDL_RenderPresent(render);
-}
 
 static void data_init() {
     FILE *f;
@@ -227,7 +54,7 @@ static double diff_timespec(const struct timespec *time1, const struct timespec 
     return (time1->tv_sec - time0->tv_sec) * 1000000.0 + (time1->tv_nsec - time0->tv_nsec) / 1000.0;
 }
 
-static void check_events() {
+static void check_events(minitel_t *minitel) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
@@ -237,65 +64,18 @@ static void check_events() {
             uint8_t code = get_code_from_key(sym);
 
             if (code != 0) {
-                keydown[((code >> 4) & 0xF)][(code & 0xF)] = (event.type == SDL_KEYDOWN);
+                minitel_keyboard_set(minitel, code, event.type == SDL_KEYDOWN);
             }
         }
     }
 }
 
-static uint32_t run_cpu(uint32_t min_cycles) {
-    uint32_t cycles = 0;
-    while (cycles < min_cycles) {
-        uint32_t instr_cycles = mcu_8051_run_instr(mcu);
-        cycles += instr_cycles;
-
-        ef9345_update(gfx, instr_cycles * 12);
-        modem_update(mcu, instr_cycles * 12);
-    }
-
-    return cycles;
+static void on_modem_event(void *arg, modem_event_t event, uint8_t byte) {
+    printf("byte %02X\n", byte);
 }
-
-#ifdef __EMSCRIPTEN__
-static struct timespec em_time;
-
-static void em_loop_func() {
-    struct timespec time;
-    clock_gettime(CLOCK_MONOTONIC, &time);
-
-    // timediff is in us
-    double timediff = diff_timespec(&time, &em_time);
-
-    check_events();
-    run_cpu(timediff * 11.059200/12.);
-    render_screen();
-
-    em_time = time;
-}
-
-#include "rom_bin.h"
-#include "charset_bin.h"
-#include "page_vdt.h"
-
-#define MIN(a, b) ((a) <= (b) ? (a) : (b))
-
-static void em_init() {
-    clock_gettime(CLOCK_MONOTONIC, &em_time);
-
-    memcpy(rom, rom_bin, MIN(rom_bin_len, sizeof(rom)));
-    memcpy(charset, charset_bin, MIN(charset_bin_len, sizeof(charset)));
-    page = (uint8_t *)page_vdt;
-    pagesize = page_vdt_len;
-}
-#endif
 
 int main(void) {
-#ifdef __EMSCRIPTEN__
-    em_init();
-#else
     data_init();
-#endif
-    modem_init();
 
     SDL_Init(SDL_INIT_VIDEO);
     SDL_StopTextInput();
@@ -310,58 +90,29 @@ int main(void) {
     SDL_RenderClear(render);
     SDL_RenderPresent(render);
 
-    mcu = mcu_8051_init(&config);
-    gfx = ef9345_init(vram, 0x1FFF, charset);
-    modem_set_page(page, pagesize);
+    minitel_t *minitel = minitel_init(rom, charset, on_modem_event, NULL);
 
-#ifdef __EMSCRIPTEN__
-    emscripten_set_main_loop(em_loop_func, 0, true);
-#else
-    struct timespec t1, t2, t3;
+    struct timespec t1, t2;
 
     double freq1_avg = 0, freq2_avg = 0;
     int iterations = 0;
 
+    minitel_modem_tx(minitel, page, pagesize);
+
     for (;;) {
-        t3 = t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
-        check_events();
-        double cycles = run_cpu(11059200 / 12 / DIVIDER);
-        render_screen();
+        check_events(minitel);
+        minitel_run(minitel, 1000000. / DIVIDER);
+        render_screen(minitel, texture);
+        SDL_RenderClear(render);
+        SDL_RenderCopy(render, texture, NULL, NULL);
+        SDL_RenderPresent(render);
         clock_gettime(CLOCK_MONOTONIC, &t2);
 
-        uint64_t delay = ((double)cycles / (11.059200 / 12));
         double diff = diff_timespec(&t2, &t1);
-
+        double delay = 1000000. / DIVIDER;
         if (delay >= diff) {
             usleep(delay - diff);
         }
-
-        clock_gettime(CLOCK_MONOTONIC, &t3);
-        double diff2 = diff_timespec(&t3, &t1);
-        
-        double freq1_mhz = (cycles * 12) / diff;
-
-        if (iterations != 0) {
-            double freq2_mhz = (cycles * 12) / diff2;
-            freq2_avg += freq2_mhz;
-        }
-
-        freq1_avg += freq1_mhz;
-        iterations++;
-
-        if ((iterations & 63) == 0) {
-            printf("Freq avg: %.3f MHz (capped: %.3f MHz)\n", freq1_avg / iterations, freq2_avg / iterations);
-        }
-
-        /*
-        printf("Freq: %.3f MHz   ", freq1_mhz);
-        printf("Factor: %.1f%%   ", (100 * freq1_mhz) / 11.059200);
-        printf("Capped: %.3f MHz\n", freq2_mhz);
-        */
     }
-
-    printf("Freq avg: %.3f MHz\n", freq1_avg / iterations);
-
-#endif
 }
